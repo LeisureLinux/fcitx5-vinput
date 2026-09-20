@@ -155,6 +155,69 @@ cmake --build --preset release-clang-mold
 sudo cmake --install build
 ```
 
+### Building a `.deb` on a Debian / Ubuntu host
+
+This path packages directly on the host with its own CMake/Ninja toolchain. It uses no
+container runtime at any point — no Docker, no Podman, no chroot — and produces the same
+`cpack`-generated `.deb` that the release workflow publishes.
+
+Install the build dependencies first (all of them are in the Debian/Ubuntu archives):
+
+```bash
+sudo apt install -y \
+  clang cmake mold ninja-build pkg-config gettext dpkg-dev file \
+  curl jq bzip2 \
+  libcurl4-openssl-dev libssl-dev libarchive-dev libpipewire-0.3-dev libsystemd-dev \
+  libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev fcitx5-modules-dev \
+  libcli11-dev nlohmann-json3-dev \
+  qt6-base-dev qt6-tools-dev qt6-tools-dev-tools
+```
+
+If your host already runs a newer `libcurl` from backports, `apt` will refuse to install the
+matching `libcurl4-openssl-dev` from the stable suite. Install the development package from
+the same suite instead, e.g. `libcurl4-openssl-dev/trixie-backports`.
+
+Stage the sherpa-onnx runtime into a local prefix. This is needed for the full build only;
+skip it for the Lite build. Nothing is installed into `/usr`, and no `sudo` is required:
+
+```bash
+prefix="$HOME/.cache/fcitx5-vinput/sherpa-onnx"
+bash scripts/build-sherpa-onnx.sh "" "${prefix}"
+export VINPUT_CMAKE_PREFIX_PATH="${prefix}"
+```
+
+If GitHub is not reachable from your host, pre-download
+`sherpa-onnx-v<version>-linux-x64-shared-no-tts.tar.bz2` with any mirror-capable client and
+pass the archive path as the third argument, e.g.
+`bash scripts/build-sherpa-onnx.sh "" "${prefix}" /path/to/sherpa.tar.bz2`. The script still
+verifies the archive against the upstream digest.
+
+Configure, build, and package. The package version comes from `VERSION`:
+
+```bash
+version="$(tr -d '\n' < VERSION)"
+cmake --preset release-clang-mold \
+  -DVINPUT_ENABLE_LOCAL_ASR=ON \
+  -DVINPUT_PROJECT_VERSION="${version}" \
+  -DVINPUT_PACKAGE_RELEASE=1 \
+  -DVINPUT_PACKAGE_CONTACT="$(git config user.name) <$(git config user.email)>" \
+  -DVINPUT_PACKAGE_HOMEPAGE_URL=https://github.com/xifan2333/fcitx5-vinput
+cmake --build --preset release-clang-mold
+cpack --config build/CPackConfig.cmake -G DEB -B dist
+```
+
+The result is `dist/fcitx5-vinput_<version>-1_amd64.deb` (the host architecture, `amd64` on
+x86_64). For the Lite build, pass `-DVINPUT_ENABLE_LOCAL_ASR=OFF`, drop the sherpa-onnx step,
+and expect `dist/fcitx5-vinput-lite_<version>-1_amd64.deb`.
+
+The package ships `/usr/share/doc/fcitx5-vinput/{copyright,changelog.Debian.gz,changelog.gz}`,
+gzipped man pages and stripped binaries. Policies that the DEB generator does not apply on its
+own (documentation metadata, man page compression, stripping of the bundled sherpa-onnx
+libraries, and 0755/0644 permissions) are handled by
+`packaging/cpack/CPackDebianDocs.cmake`, a `CPACK_PRE_BUILD_SCRIPTS` hook that only runs for
+the DEB generator. The long description comes from `packaging/cpack/description.txt` and the
+DEP-5 copyright from `packaging/cpack/copyright`.
+
 ## Quick start
 
 ```bash

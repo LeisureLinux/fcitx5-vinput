@@ -28,6 +28,11 @@ set(VINPUT_PACKAGE_HOMEPAGE_URL ""
 set(VINPUT_PACKAGE_DESCRIPTION_SUMMARY
     "Offline voice input addon for Fcitx5 with optional OpenAI-compatible postprocess"
     CACHE STRING "Short description used by generated distro packages")
+# Kept in a file rather than a cache variable: a multi-line string in the CMake
+# cache is silently truncated to its first line on every reconfigure.
+set(VINPUT_PACKAGE_DESCRIPTION_EXTENDED_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/cpack/description.txt"
+    CACHE FILEPATH "Extended description file used by generated distro packages")
 
 option(VINPUT_ENABLE_LOCAL_ASR "Build with sherpa-onnx local ASR support" ON)
 
@@ -212,11 +217,27 @@ endif()
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${VINPUT_PACKAGE_CONTACT}")
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+if(EXISTS "${VINPUT_PACKAGE_DESCRIPTION_EXTENDED_FILE}")
+    file(READ "${VINPUT_PACKAGE_DESCRIPTION_EXTENDED_FILE}"
+        VINPUT_PACKAGE_DESCRIPTION_EXTENDED)
+    string(STRIP "${VINPUT_PACKAGE_DESCRIPTION_EXTENDED}"
+        VINPUT_PACKAGE_DESCRIPTION_EXTENDED)
+    set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "${VINPUT_PACKAGE_DESCRIPTION_EXTENDED}")
+else()
+    # Silently falling back to the one-line summary would ship a package whose
+    # long description is empty; fail loudly instead.
+    message(FATAL_ERROR
+        "Extended package description not found: ${VINPUT_PACKAGE_DESCRIPTION_EXTENDED_FILE}")
+endif()
 list(APPEND CPACK_DEBIAN_PACKAGE_DEPENDS
     fcitx5
 )
 set(CPACK_DEBIAN_PACKAGE_VERSION "${VINPUT_DEBIAN_UPSTREAM_VERSION}")
 set(CPACK_DEBIAN_PACKAGE_RELEASE "${VINPUT_PACKAGE_RELEASE}")
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+
+# The DEB generator does not install /usr/share/doc metadata nor compress man
+# pages; RPM does both by itself. Keep the fix-up DEB-only.
+set(CPACK_PRE_BUILD_SCRIPTS "${CMAKE_SOURCE_DIR}/packaging/cpack/CPackDebianDocs.cmake")
 
 include(CPack)

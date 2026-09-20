@@ -155,6 +155,63 @@ cmake --build --preset release-clang-mold
 sudo cmake --install build
 ```
 
+### 在 Debian / Ubuntu 宿主机上打包 `.deb`
+
+这条路径完全在宿主机上用本机工具链打包，**全程不使用任何容器能力**（不依赖 Docker、Podman、chroot），
+产物与 release 工作流的 `cpack` 生成物一致。
+
+先安装构建依赖（均来自 Debian/Ubuntu 官方仓库）：
+
+```bash
+sudo apt install -y \
+  clang cmake mold ninja-build pkg-config gettext dpkg-dev file \
+  curl jq bzip2 \
+  libcurl4-openssl-dev libssl-dev libarchive-dev libpipewire-0.3-dev libsystemd-dev \
+  libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev fcitx5-modules-dev \
+  libcli11-dev nlohmann-json3-dev \
+  qt6-base-dev qt6-tools-dev qt6-tools-dev-tools
+```
+
+如果宿主机已从 backports 安装了更新的 `libcurl`，`apt` 会拒绍安装 stable 套件中的同名
+`libcurl4-openssl-dev`。此时请从同一套件安装开发包，例如 `libcurl4-openssl-dev/trixie-backports`。
+
+把 sherpa-onnx 运行时装到一个本地前缀（仅完整版需要，Lite 版跳过）。不会写入 `/usr`，也不需要 `sudo`：
+
+```bash
+prefix="$HOME/.cache/fcitx5-vinput/sherpa-onnx"
+bash scripts/build-sherpa-onnx.sh "" "${prefix}"
+export VINPUT_CMAKE_PREFIX_PATH="${prefix}"
+```
+
+若宿主机直连 GitHub 不稳定，可用任意支持镜像/代理的下载器预先拉取
+`sherpa-onnx-v<版本>-linux-x64-shared-no-tts.tar.bz2`，再把归档路径作为第三个参数传入，例如
+`bash scripts/build-sherpa-onnx.sh "" "${prefix}" /path/to/sherpa.tar.bz2`。脚本仍会校验上游摘要。
+
+配置、编译并打包（版本号取自 `VERSION`）：
+
+```bash
+version="$(tr -d '\n' < VERSION)"
+cmake --preset release-clang-mold \
+  -DVINPUT_ENABLE_LOCAL_ASR=ON \
+  -DVINPUT_PROJECT_VERSION="${version}" \
+  -DVINPUT_PACKAGE_RELEASE=1 \
+  -DVINPUT_PACKAGE_CONTACT="$(git config user.name) <$(git config user.email)>" \
+  -DVINPUT_PACKAGE_HOMEPAGE_URL=https://github.com/xifan2333/fcitx5-vinput
+cmake --build --preset release-clang-mold
+cpack --config build/CPackConfig.cmake -G DEB -B dist
+```
+
+产物为 `dist/fcitx5-vinput_<版本>-1_amd64.deb`（架构随宿主机，x86_64 上即 `amd64`）。
+Lite 版请改用 `-DVINPUT_ENABLE_LOCAL_ASR=OFF`、跳过 sherpa-onnx 步骤，产物为
+`dist/fcitx5-vinput-lite_<版本>-1_amd64.deb`。
+
+包内包含 `/usr/share/doc/fcitx5-vinput/{copyright,changelog.Debian.gz,changelog.gz}`、
+已压缩的 man page 以及已 strip 的二进制。DEB 生成器本身不会处理的部分（文档元数据、
+man page 压缩、bundled sherpa-onnx 库的 strip、0755/0644 权限）由
+`packaging/cpack/CPackDebianDocs.cmake` 处理，它以 `CPACK_PRE_BUILD_SCRIPTS` 钩子形式
+只在 DEB 生成器下生效。长描述来自 `packaging/cpack/description.txt`，DEP-5 版权信息来自
+`packaging/cpack/copyright`。
+
 ## 快速开始
 
 ```bash

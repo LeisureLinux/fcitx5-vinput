@@ -1,0 +1,7 @@
+Voice input for Fcitx5 with local and cloud speech recognition,
+LLM post-processing and a unified command palette.
+
+This package provides the Fcitx5 addon, the vinput-daemon background service,
+the vinput command line tool and the vinput-gui settings application. Local ASR
+models are downloaded on demand from the GUI; cloud ASR and LLM backends are
+optional and configured at runtime.
