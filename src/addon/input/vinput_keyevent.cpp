@@ -282,7 +282,22 @@ void VinputEngine::handleKeyEvent(fcitx::Event& event) {
       return;
     }
 
-    // 3.2 Any non-matching key pressed while a modifier is pending or active
+    // 3.2 The key driving a hold is not an interrupting key. Holding a
+    // non-modifier trigger makes the client repeat the press while the
+    // activation delay runs and while the recording is live, and clients
+    // report those repeats inconsistently: the IBus frontend never sets
+    // KeyState::Repeat. Match the key of the running hold as well, so the
+    // interrupt guard below cannot cancel the recording it just started.
+    if (!isModifier &&
+        (keyEvent.key().keyListIndex(trigger_keys_) >= 0 ||
+         keyEvent.key().keyListIndex(command_keys_) >= 0) &&
+        (keyEvent.rawKey().states().test(fcitx::KeyState::Repeat) ||
+         isPressOfActiveTrigger(keyEvent.key()))) {
+      keyEvent.filterAndAccept();
+      return;
+    }
+
+    // 3.3 Any non-matching key pressed while a modifier is pending or active
     // This indicates a combination (e.g. Ctrl+C, Alt+Tab, Shift+A). Interrupt and pass through!
     if (pending_modifier_.action != ModifierAction::None || modifier_hold_active_ ||
         (session_ && session_->stop_on_release && !session_->trigger_released)) {
@@ -299,7 +314,7 @@ void VinputEngine::handleKeyEvent(fcitx::Event& event) {
       return;
     }
 
-    // 3.3 Non-modifier trigger keys (e.g. F8, Pause, etc.)
+    // 3.4 Non-modifier trigger keys (e.g. F8, Pause, etc.)
     const int trigger_index = !isModifier ? keyEvent.key().keyListIndex(trigger_keys_) : -1;
     const bool is_trigger = trigger_index >= 0;
     const int command_index = !isModifier ? keyEvent.key().keyListIndex(command_keys_) : -1;
@@ -331,19 +346,27 @@ void VinputEngine::handleKeyEvent(fcitx::Event& event) {
       auto trigger = is_trigger ? trigger_keys_[trigger_index] : command_keys_[command_index];
 
       if (trigger_mode_ == TriggerMode::Hold) {
+        // A repeat that outlasts the debounce above belongs to the hold that
+        // is already waiting out its activation delay. Restarting the deadline
+        // would push it back on every repeat, so keep the original one. A
+        // press in another context is a new hold: the context that armed the
+        // timer may even be gone by now.
+        if (isPendingStartTrigger(trigger) && pending_start_ic_.get() == ic) {
+          keyEvent.filterAndAccept();
+          return;
+        }
         cancelPendingStart();
+        pending_start_trigger_ = trigger;
+        pending_start_ic_ =
+            ic != nullptr ? ic->watch() : fcitx::TrackableObjectReference<fcitx::InputContext>();
         const auto fire_at_usec =
             fcitx::now(kDefaultClock) +
             static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(hold_activation_delay_)
                     .count());
         pending_start_event_ = instance_->eventLoop().addTimeEvent(
-            kDefaultClock, fire_at_usec, 0,
-            [this,
-             ic_ref = ic != nullptr ? ic->watch()
-                                    : fcitx::TrackableObjectReference<fcitx::InputContext>(),
-             trigger, is_command](auto*, uint64_t) {
-              auto* target_ic = ic_ref.get();
+            kDefaultClock, fire_at_usec, 0, [this, trigger, is_command](auto*, uint64_t) {
+              auto* target_ic = pending_start_ic_.get();
               if (target_ic == nullptr) {
                 pending_start_event_.reset();
                 return false;
@@ -452,8 +475,12 @@ void VinputEngine::handleKeyEvent(fcitx::Event& event) {
     const bool is_command = command_index >= 0;
 
     if (is_trigger || is_command) {
-      if (trigger_mode_ == TriggerMode::Hold && pending_start_event_ &&
-          pending_start_event_->isEnabled()) {
+      // Releasing before the activation delay elapsed is a tap, so the hold
+      // never starts. Only the key that armed the timer may retract it: a
+      // second trigger key pressed meanwhile owns the pending hold now.
+      const auto& released =
+          is_trigger ? trigger_keys_[trigger_index] : command_keys_[command_index];
+      if (trigger_mode_ == TriggerMode::Hold && isPendingStartTrigger(released)) {
         cancelPendingStart();
         keyEvent.filterAndAccept();
         return;
@@ -522,6 +549,18 @@ bool VinputEngine::isReleaseOfActiveTrigger(const fcitx::Key& key) const {
          trigger_key.states().testAny(released_modifier_state);
 }
 
+bool VinputEngine::isPressOfActiveTrigger(const fcitx::Key& key) const {
+  if (!session_ || session_->trigger_released || session_->trigger.isModifier()) {
+    return false;
+  }
+  return key.check(session_->trigger);
+}
+
+bool VinputEngine::isPendingStartTrigger(const fcitx::Key& trigger) const {
+  return pending_start_event_ && pending_start_event_->isEnabled() &&
+         pending_start_trigger_ == trigger;
+}
+
 void VinputEngine::cancelPendingStop() {
   if (pending_stop_event_ && pending_stop_event_->isEnabled()) {
     pending_stop_event_->setEnabled(false);
@@ -532,6 +571,8 @@ void VinputEngine::cancelPendingStart() {
   if (pending_start_event_ && pending_start_event_->isEnabled()) {
     pending_start_event_->setEnabled(false);
   }
+  pending_start_trigger_ = fcitx::Key();
+  pending_start_ic_.unwatch();
 }
 
 void VinputEngine::scheduleStopRecording() {
